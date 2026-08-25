@@ -303,16 +303,17 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
   //   3. before_provider_request strips tools from the provider payload, so the
   //      model mechanically cannot call any tool during the final turn;
   //   4. tool_call blocks any tool call that somehow still occurs. The block is
-  //      non-terminating during the reserved turn (the model gets one more chance
-  //      to write the report) and terminating from the next turn on (the tool batch
-  //      ends, so the loop can never run past maxTurns+1 turns).
-  // The run then ends naturally after the final text-only message: exactly maxTurns
-  // assistant message_end events, no synthetic aborted message, no off-by-one.
+  //      non-terminating during the first finalization turn (the model gets one
+  //      intended synthesis opportunity) and terminating from the next turn on.
+  // The run then ends naturally after synthesis, with no continued exploratory
+  // turns or synthetic aborted message. Tool-triggered finalization may finish
+  // before the configured normal turn boundary.
   // A tool_call event is emitted for each call in the assistant's current batch.
   // Mark the threshold when observed, but keep finalizing false until the next
   // turn_start so every already-issued call in that batch can finish.
   let finalizing = false;
   let hardFinalizing = false;
+  let finalizationTurnIndex: number | undefined;
   let finalizationMarkerWritten = false;
   let toolCallsSeen = 0;
   let toolCallBudgetReached = false;
@@ -360,16 +361,19 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
 
   pi.on("turn_start", (event) => {
     if (event.turnIndex < finalTurnIndex && !toolCallBudgetReached) return;
-    finalizing = true;
-    if (!finalizationMarkerWritten) {
-      finalizationMarkerWritten = true;
-      process.stderr.write(`${FINALIZATION_MARKER}\n`);
-      if (toolCallBudgetReached) process.stderr.write(`${TOOL_FINALIZATION_MARKER}\n`);
+    if (!finalizing) {
+      finalizing = true;
+      finalizationTurnIndex = event.turnIndex;
+      if (!finalizationMarkerWritten) {
+        finalizationMarkerWritten = true;
+        process.stderr.write(`${FINALIZATION_MARKER}\n`);
+        if (toolCallBudgetReached) process.stderr.write(`${TOOL_FINALIZATION_MARKER}\n`);
+      }
     }
-    if (event.turnIndex > finalTurnIndex) {
-      // The reserved synthesis turn was already consumed and the model still wants
-      // another turn. Terminate any tool batch from here on so the loop cannot
-      // continue past maxTurns+1 turns.
+    if (finalizationTurnIndex !== undefined && event.turnIndex > finalizationTurnIndex) {
+      // The first finalization turn was already consumed and the model still wants
+      // another turn. Terminate any tool batch from here on; the limit is relative
+      // to the actual finalization turn, not the normal turn boundary.
       hardFinalizing = true;
       return;
     }

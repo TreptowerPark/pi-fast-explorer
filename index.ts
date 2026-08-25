@@ -463,6 +463,14 @@ function hasToolCall(message: any): boolean {
   );
 }
 
+function isUsableReportMessage(message: any, text: string): boolean {
+  return Boolean(
+    text &&
+      !hasToolCall(message) &&
+      (!message.stopReason || ["stop", "end"].includes(message.stopReason)),
+  );
+}
+
 function addUsage(telemetry: ExplorerTelemetry, usage: any): void {
   if (!usage || typeof usage !== "object") return;
   telemetry.input += Number(usage.input) || 0;
@@ -910,8 +918,12 @@ async function runExplorer(
     let stderr = "";
     let latestText = "";
     let terminalText = "";
+    let finalizationText = "";
     let lastStopReason = "";
     let finalizingEngaged = false;
+    let finalizationTurnActive = false;
+    let finalizationTurnObserved = false;
+    let turnStartsSeen = 0;
     let finalizationTrigger: "turn" | "tools" | undefined;
     let timedOut = false;
     let abortedByParent = false;
@@ -923,6 +935,24 @@ async function runExplorer(
       try {
         event = JSON.parse(line);
       } catch {
+        return;
+      }
+
+      if (event.type === "turn_start") {
+        // Pi emits turn_start on the JSON stream after extension turn_start
+        // handlers have run and before the corresponding message_end. Use that
+        // ordered stream event to classify the synthesis turn even if the
+        // separate stderr marker is delivered later by the parent OS pipe.
+        const turnIndex = turnStartsSeen;
+        turnStartsSeen += 1;
+        finalizationTurnActive =
+          turnIndex >= maxTurns - 1 || telemetry.toolCalls >= maxToolCalls;
+        if (finalizationTurnActive) finalizationTurnObserved = true;
+        return;
+      }
+
+      if (event.type === "turn_end") {
+        finalizationTurnActive = false;
         return;
       }
 
@@ -951,8 +981,9 @@ async function runExplorer(
         const text = extractText(message);
         if (text) {
           latestText = text;
-          if (!hasToolCall(message) && (!message.stopReason || ["stop", "end"].includes(message.stopReason))) {
-            terminalText = text;
+          if (isUsableReportMessage(message, text)) {
+            if (finalizationTurnActive) finalizationText = text;
+            else terminalText = text;
           }
         }
       }
@@ -969,7 +1000,7 @@ async function runExplorer(
     child.stderr?.on("data", (data: Buffer | string) => {
       stderr += data.toString();
       if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
-      // The child writes this marker when its reserved synthesis turn starts, so
+      // The child writes this marker when the first finalization turn starts, so
       // the live UI can switch to the "finalizing" state before the run ends.
       if (stderr.includes(TOOL_FINALIZATION_MARKER)) finalizationTrigger = "tools";
       if (!finalizingEngaged && stderr.includes(FINALIZATION_MARKER)) {
@@ -1001,12 +1032,13 @@ async function runExplorer(
       if (stdoutBuffer.trim()) processEvent(stdoutBuffer);
 
       telemetry.elapsedMs = Date.now() - startedAt;
-      let report = truncateReport(terminalText || latestText);
-      // Finalization engages when the child enters its reserved synthesis turn
-      // (stderr marker) or, as a fallback, when the observed turn count reaches
-      // the configured maximum.
-      const reachedBudgetBoundary = finalizingEngaged || telemetry.turns >= maxTurns;
+      // Finalization is identified from the marker or the ordered JSON turn
+      // stream. A budget-finalized run may use only text from that actual
+      // synthesis turn; ordinary completion keeps the existing terminal/latest
+      // selection.
+      const reachedBudgetBoundary = finalizingEngaged || finalizationTurnObserved || telemetry.turns >= maxTurns;
       if (reachedBudgetBoundary) telemetry.finalizationTrigger = finalizationTrigger ?? "turn";
+      let report = truncateReport(reachedBudgetBoundary ? finalizationText : terminalText || latestText);
 
       if (timedOut) telemetry.termination = "timeout";
       else if (abortedByParent) telemetry.termination = "error";

@@ -78,8 +78,8 @@ When the child enters its reserved synthesis turn, the widget switches to `EXPLO
 Pi has no general CLI `--max-turns` flag. The child treats the configured limit as an *investigation allowance plus one reserved synthesis turn*:
 
 - turns `1..maxTurns-1` — normal read-only exploration;
-- turn `maxTurns` — reserved for synthesis. When it starts, the child tells the model to stop using tools, appends that instruction to the LLM context, strips all tools from the outgoing provider payload (so the model mechanically cannot call a tool), and blocks any tool call that still occurs. The run then ends naturally with the final report; no `ctx.abort()` is involved, so no synthetic extra turn appears.
-- the repository-tool ceiling is checked between turns. If an assistant has already emitted a parallel batch that reaches or exceeds the ceiling, every call in that batch is allowed to finish; the next turn enters the same reserved synthesis path instead of starting another investigative batch.
+- turn `maxTurns` — the normal reserved synthesis turn. When it starts, the child tells the model to stop using tools, appends that instruction to the LLM context, strips all tools from the outgoing provider payload (so the model mechanically cannot call a tool), and blocks any tool call that still occurs. The run then ends naturally after the synthesis opportunity; no `ctx.abort()` is involved, so no synthetic extra turn appears.
+- the repository-tool ceiling is checked between turns. If an assistant has already emitted a parallel batch that reaches or exceeds the ceiling, every call in that batch is allowed to finish; the next turn enters the same finalization path early instead of starting another investigative batch. Whichever trigger starts finalization, it provides one intended synthesis turn and no continued exploratory turns.
 
 Telemetry termination values:
 
