@@ -48,7 +48,7 @@ PI_DEEP_EXPLORER_MAX_TOOL_CALLS=15 # bounded to 1..30
 PI_DEEP_EXPLORER_TIMEOUT_MS=180000
 ```
 
-Deep workers have primary-path, alternate-boundary, and adversarial-verification roles while still answering the full original question. Their compact reports are passed to a fresh no-tools reducer; the parent receives only the reducer result or a host-built fallback from usable reports. Reducer failure therefore does not discard worker evidence. Deep remains isolated, read-only, write-free, and without web, package, shell, or recursive-agent tools.
+Deep workers have primary-path, alternate-boundary, and adversarial-verification roles while still answering the full original question. Their compact reports are passed to a fresh no-tools reducer; the parent receives only the reducer result or a host-built fallback from usable reports. Reducer failure therefore does not discard worker evidence. Deep remains isolated, read-only, write-free, and without web, package, shell, or recursive-agent tools. Deep workers receive an explicit deep-mode prompt: correctness and high-confidence coverage first, bounded targeted investigation, default turns 1–5 for investigation, and turn 6 reserved for no-tools synthesis; they stop earlier when sufficient evidence exists.
 
 When the delegated question contains explicit conservative line-oriented numbered requirements
 (`1. ...` or `1) ...`), the child receives a deterministic `R1`, `R2`, ...
@@ -58,14 +58,17 @@ final `[COVERAGE]` trailer with one `CONFIRMED`, `NOT_CONFIRMED`, or
 earlier literal marker examples are ordinary prose, and the closing `[/COVERAGE]`
 marker must be the final non-whitespace content. The host validates this structure
 locally. Fast mode gives a malformed trailer at most one no-tools repair using the
-current report; no additional research is allowed. Deep mode aggregates valid
-worker entries deterministically and sends disagreements to its reducer. The
-trailer is stripped before a report enters a parent handoff. `/explore-fast-stats`
-shows fast coverage counts; `/explore-deep-stats` shows the aggregate deep ledger.
+current report; no additional research is allowed. Deep mode consumes coverage
+entries only from structurally valid worker trailers and aggregates their
+investigation states deterministically; invalid coverage metadata does not make an
+otherwise usable worker report unusable. The trailer is stripped before a report
+enters a parent handoff. `/explore-fast-stats` shows fast coverage counts;
+`/explore-deep-stats` shows the aggregate deep ledger, including invalid coverage
+metadata counts.
 
 Unstructured questions keep the existing path and do not invoke coverage repair.
 
-Deep runs the workers concurrently and aggregates explicit-requirement coverage deterministically. Material worker disagreements are passed to the reducer rather than silently marked confirmed. If all workers fail, deep persists only a compact failure marker and does not trigger a parent answer. With at least one usable worker, a reducer success yields `completed` or `partial-completed`; reducer failure yields `fallback` using only the already-compressed labeled worker reports.
+Deep runs the workers concurrently and aggregates explicit-requirement coverage deterministically. `CONFIRMED`, `NOT_CONFIRMED`, and `NOT_INVESTIGATED` are investigation states, not semantic disagreement; actual contradictory conclusions must be identified by the reducer from worker prose/evidence. If all workers fail, deep persists only a compact failure marker and does not trigger a parent answer. With at least one usable worker, a reducer success yields `completed` or `partial-completed`; reducer failure yields `fallback` using only the already-compressed labeled worker reports.
 
 The parent parses JSON-mode child events and persists only one compact custom-message handoff into the parent session. Fast uses `pi-fast-explorer`; deep uses `pi-deep-explorer`. A successful or fallback deep run triggers exactly one ordinary parent-model turn. The handoff contains an explicit instruction to answer the original task, the full original task, and the child's compressed final report. It participates in LLM context and survives session save/resume. Telemetry is not persisted into context; `/explore-fast-stats` shows the last invocation's telemetry in the current Pi process.
 
