@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { getMarkdownTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { DungeonWidget, explorerActivityFromTool, type DungeonOutcome, type ExplorerActivity } from "./dungeon-widget.ts";
+import { installParentSynthesisGuard } from "./parent-synthesis-guard.ts";
 
 const DEFAULT_MODEL = "openai-codex/gpt-5.6-luna";
 const DEFAULT_THINKING = "high";
@@ -882,7 +883,9 @@ export function buildParentHandoff(question: string, report: string): string {
     "",
     "Exploration for the current user request is complete.",
     "",
-    "Answer the user's original request now, using the findings below as evidence.",
+    "Answer the original task now using only the supplied exploration findings.",
+    "Do not perform additional repository research or call tools.",
+    "If the supplied evidence is insufficient, state the uncertainty rather than investigating further.",
     "Produce the actual final answer to the user.",
     "",
     "Do not merely acknowledge this report.",
@@ -1812,7 +1815,9 @@ export function buildDeepParentHandoff(
     fallbackUsed
       ? "Reducer synthesis failed; use the labeled deterministic worker fallback below as evidence."
       : "A bounded reducer synthesized the labeled worker evidence below.",
-    "Answer the original task now in one normal parent response.",
+    "Answer the original task now in one normal parent response using only the supplied findings.",
+    "Do not perform additional repository research or call tools.",
+    "If the supplied evidence is insufficient, state the uncertainty rather than investigating further.",
     "Rely on supplied findings and path/symbol evidence; acknowledge unresolved uncertainty rather than inventing evidence.",
     "",
     "Original task:",
@@ -1953,6 +1958,7 @@ function notify(ctx: any, message: string, type: "info" | "warning" | "error" = 
 
 export default function piFastExplorer(pi: ExtensionAPI) {
   let runtimeActive = true;
+  const parentSynthesisGuard = installParentSynthesisGuard(pi);
 
   // Render visible explorer custom messages exactly once: the content's own
   // "[pi-fast-explorer]" header line is the label, followed by the report. The
@@ -2082,19 +2088,25 @@ export default function piFastExplorer(pi: ExtensionAPI) {
           // Inject only the compact handoff into parent context, then let Pi
           // run exactly one ordinary parent turn. The genuine assistant
           // response is also the normal session-persistence boundary.
-          pi.sendMessage(
-            {
-              customType: "pi-fast-explorer",
-              content: handoffContent,
-              display: false,
-              details: {
-                telemetry: run.telemetry,
-                question,
-                termination: run.telemetry.termination,
+          parentSynthesisGuard.arm();
+          try {
+            pi.sendMessage(
+              {
+                customType: "pi-fast-explorer",
+                content: handoffContent,
+                display: false,
+                details: {
+                  telemetry: run.telemetry,
+                  question,
+                  termination: run.telemetry.termination,
+                },
               },
-            },
-            { triggerTurn: true },
-          );
+              { triggerTurn: true },
+            );
+          } catch (error) {
+            parentSynthesisGuard.cancel();
+            throw error;
+          }
         } else {
           // A failed exploration must not trigger a bogus answer from absent
           // findings. Keep the compact failure marker visible and durable.
@@ -2171,14 +2183,20 @@ export default function piFastExplorer(pi: ExtensionAPI) {
         if (okTermination) {
           // One contextual handoff triggers exactly one ordinary parent turn.
           // The reducer and worker transcripts never enter the parent session.
-          pi.sendMessage(
-            {
-              customType: "pi-deep-explorer",
-              content: handoffContent,
-              display: false,
-            },
-            { triggerTurn: true },
-          );
+          parentSynthesisGuard.arm();
+          try {
+            pi.sendMessage(
+              {
+                customType: "pi-deep-explorer",
+                content: handoffContent,
+                display: false,
+              },
+              { triggerTurn: true },
+            );
+          } catch (error) {
+            parentSynthesisGuard.cancel();
+            throw error;
+          }
         } else {
           pi.sendMessage(
             {
