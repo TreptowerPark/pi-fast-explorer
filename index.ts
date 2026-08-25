@@ -131,6 +131,8 @@ Rules:
 - Use repo_git only for explicitly relevant status, log, or diff context.
 - Read the minimum code necessary to establish each requested conclusion.
 - Pursue targeted evidence across relevant paths and boundaries, but do not wander exhaustively or broaden into an architecture review.
+- For important runtime or user-visible behavior claims, verify the actual production call path. Start at a relevant production entry point or caller, not at the helper/API itself. Do not treat a helper/API's existence, name, comments, or implementation as evidence that the application uses it. Trace far enough to establish that the entry point reaches the implementation, and check alternate or bypass paths when they could change the conclusion. A manager/helper trace alone does not establish the normal user workflow. Distinguish an API that supports or appears intended to support behavior from a production caller that actually uses it; if the caller path is not established, qualify the behavior as unverified.
+- For central behavior findings, include a compact Execution path: trace (or Execution path: NOT VERIFIED) in the report. Do not add one for minor findings.
 - Batch independent searches and reads when possible.
 - The default deep budget is 6 turns total: turns 1–5 are bounded investigation turns, and turn 6 is reserved for no-tools synthesis. The default repository-tool ceiling is 15 calls. The host's mechanical finalization and tool enforcement remain authoritative if configured limits differ.
 - Use the investigation allowance through turn 5 when additional targeted evidence is needed; do not start unnecessary work merely to fill the allowance.
@@ -169,6 +171,14 @@ preserve useful path:line and symbol evidence, identify actual contradictory con
 worker evidence, and distinguish established facts from uncertainty. Coverage states are
 investigation metadata, not semantic conclusions; do not infer disagreement from differing
 CONFIRMED, NOT_CONFIRMED, or NOT_INVESTIGATED states.
+
+For runtime or architectural behavior, prefer evidence from actual production callers and
+entry-point-to-effect traces over an isolated helper/API implementation. Do not synthesize
+that the application does something merely because a worker found a function that implements
+it. If one worker shows that a production caller bypasses an API while another infers behavior
+from that API, prefer the verified caller path and explicitly resolve the discrepancy. If no
+worker established the relevant caller path for a central behavioral claim, preserve it as
+uncertainty rather than promoting it to fact.
 
 Answer the original question from the supplied evidence. Account for every explicit requirement;
 if evidence is missing or conflicting, say so for that requirement. Keep the result compact and
@@ -303,17 +313,17 @@ const DEEP_WORKER_DESCRIPTORS: DeepWorkerDescriptor[] = [
   {
     label: "Worker A",
     role: "primary path",
-    instruction: "Trace the main implementation and execution path needed to answer the question. Establish the strongest direct evidence, including useful path:line or symbol references.",
+    instruction: "Start at a real production entry point or caller (for user-visible behavior, the relevant UI or event path), not at the helper/API itself, and trace through the implementation needed to answer the question. For central behavior claims, verify that the helper/API being relied upon is actually invoked by that production path; do not infer usage from its existence or name. Establish the strongest direct evidence with useful path:line or symbol references.",
   },
   {
     label: "Worker B",
     role: "boundaries and alternate paths",
-    instruction: "Investigate surrounding state, dependencies, configuration, alternate execution paths, and relevant interactions that a primary-path trace could miss. Still answer the original question.",
+    instruction: "Investigate surrounding state, dependencies, alternate execution paths, and bypasses that a primary-path trace could miss. Compare apparently intended/helper APIs with actual production callers when that distinction could change the answer. Look for multiple entry points implementing the same user-visible operation differently. Still answer the original question.",
   },
   {
     label: "Worker C",
     role: "adversarial verification",
-    instruction: "Try to falsify likely conclusions. Look for edge cases, contradictory implementations, failure paths, hidden assumptions, and evidence that changes the answer. Still answer the original question.",
+    instruction: "Try to falsify likely conclusions. For every central execution-path assumption you encounter, verify actual call sites from a relevant production entry point. If a helper/API appears authoritative, ask who actually calls it and trace outward to production entry points before accepting it. Treat it as unverified until a real caller reaches it. Look specifically for bypasses, parallel implementations, stale paths, contradictory call wiring, failure paths, and evidence that changes the answer. Still answer the original question.",
   },
   {
     label: "Worker D",
@@ -1018,6 +1028,8 @@ export function buildDeepChildPrompt(
     "- path:line/function — significance",
     "- ...",
     "",
+    "For central behavior findings only, include a compact Execution path: trace such as A -> B -> C, or write Execution path: NOT VERIFIED. Do not add this block for minor findings.",
+    "",
     "Uncertainty:",
     "- ...",
     "",
@@ -1650,7 +1662,7 @@ function buildDeepReducerPrompt(
     "Worker reports (compact evidence only; no new research is allowed):",
     ...workerSections,
     "",
-    "Synthesize the answer to the original question now. Account for every requirement in a Requirements section and preserve useful path:line or symbol evidence. Treat coverage states as investigation metadata; identify actual contradictory conclusions from the worker reports themselves, and do not call mixed coverage states a conflict.",
+    "Synthesize the answer to the original question now. Account for every requirement in a Requirements section and preserve useful path:line or symbol evidence. For central runtime or architectural claims, rank verified production caller paths and entry-point-to-effect traces above isolated helper/API implementations; a trace that starts at a manager/helper does not establish the normal user workflow. If reports disagree because a production caller bypasses an API, prefer and explicitly explain the verified caller path; if the relevant caller path was not established, preserve the claim as uncertainty. Treat coverage states as investigation metadata; identify actual contradictory conclusions from the worker reports themselves, and do not call mixed coverage states a conflict.",
   ].join("\n");
 }
 
