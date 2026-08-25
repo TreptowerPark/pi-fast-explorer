@@ -6,10 +6,19 @@ A manually invoked Pi extension for disposable, read-only repository reconnaissa
 
 ```text
 /explore-fast <focused repository question>
+/explore-deep <broader/high-confidence repository question>
 /explore-fast-stats
+/explore-deep-stats
 ```
 
-`/explore-fast` starts a separate `pi` process in the current working directory. The child gets a new ephemeral session, a replacement system prompt, the delegated question, and no parent transcript. Its only tools are narrow read-only repository tools:
+Conceptually:
+
+```text
+fast = one bounded disposable exploration context
+deep = three bounded disposable exploration contexts + one bounded reducer
+```
+
+Both start separate `pi` processes in the current working directory. The child gets a new ephemeral session, a replacement system prompt, the delegated question, and no parent transcript. Its only tools are narrow read-only repository tools:
 
 - `repo_search` — `rg` with `git grep` fallback
 - `repo_read` — bounded `sed -n` line ranges
@@ -18,7 +27,7 @@ A manually invoked Pi extension for disposable, read-only repository reconnaissa
 
 Ambient extensions, skills, prompt templates, themes, context files, and built-in tools are disabled for the child. The child extension is the only explicit extension loaded. It cannot call `write`, `edit`, `bash`, package tools, web tools, or another agent.
 
-The default child is `openai-codex/gpt-5.6-luna` at `high` thinking, with a five-turn budget (four investigation turns plus one reserved synthesis turn), a ten repository-tool-call ceiling, and a 90-second timeout. Override defaults for experiments with:
+The default fast child is `openai-codex/gpt-5.6-luna` at `high` thinking, with a five-turn budget (four investigation turns plus one reserved synthesis turn), a ten repository-tool-call ceiling, and a 90-second timeout. Override fast defaults with:
 
 ```bash
 PI_FAST_EXPLORER_MODEL=...
@@ -28,21 +37,37 @@ PI_FAST_EXPLORER_MAX_TOOL_CALLS=10 # bounded to 1..30
 PI_FAST_EXPLORER_TIMEOUT_MS=90000
 ```
 
-When the delegated question contains explicit line-oriented numbered requirements
+Deep mode defaults to three workers, six turns per worker (five investigation turns plus one reserved synthesis turn), 15 repository-tool calls per worker, and a 180-second per-child timeout. Worker count is bounded to 1..4. Deep reuses the fast model/thinking settings unless its own overrides are set:
+
+```bash
+PI_DEEP_EXPLORER_WORKERS=3       # bounded to 1..4
+PI_DEEP_EXPLORER_MODEL=...
+PI_DEEP_EXPLORER_THINKING=high
+PI_DEEP_EXPLORER_MAX_TURNS=6
+PI_DEEP_EXPLORER_MAX_TOOL_CALLS=15 # bounded to 1..30
+PI_DEEP_EXPLORER_TIMEOUT_MS=180000
+```
+
+Deep workers have primary-path, alternate-boundary, and adversarial-verification roles while still answering the full original question. Their compact reports are passed to a fresh no-tools reducer; the parent receives only the reducer result or a host-built fallback from usable reports. Reducer failure therefore does not discard worker evidence. Deep remains isolated, read-only, write-free, and without web, package, shell, or recursive-agent tools.
+
+When the delegated question contains explicit conservative line-oriented numbered requirements
 (`1. ...` or `1) ...`), the child receives a deterministic `R1`, `R2`, ...
-coverage checklist. Its final prose report includes coverage metadata as a strict
+coverage checklist. Only column-zero items outside fenced code and quoted or nested list lines are recognized; indented continuation prose is retained when it clearly belongs to that item. Its final prose report includes coverage metadata as a strict
 final `[COVERAGE]` trailer with one `CONFIRMED`, `NOT_CONFIRMED`, or
 `NOT_INVESTIGATED` entry per requirement. Only the final block is interpreted;
 earlier literal marker examples are ordinary prose, and the closing `[/COVERAGE]`
 marker must be the final non-whitespace content. The host validates this structure
-locally. A malformed trailer gets at most one no-tools repair using the current
-report; no additional research is allowed. The trailer is stripped before the
-report enters the parent handoff. `/explore-fast-stats` shows the compact coverage
-counts for these runs.
+locally. Fast mode gives a malformed trailer at most one no-tools repair using the
+current report; no additional research is allowed. Deep mode aggregates valid
+worker entries deterministically and sends disagreements to its reducer. The
+trailer is stripped before a report enters a parent handoff. `/explore-fast-stats`
+shows fast coverage counts; `/explore-deep-stats` shows the aggregate deep ledger.
 
 Unstructured questions keep the existing path and do not invoke coverage repair.
 
-The parent parses JSON-mode child events and persists only a compact `pi-fast-explorer` custom-message handoff into the parent session. The handoff contains an explicit instruction to answer the original task, the full original task, and the child's compressed final report. It participates in LLM context and survives session save/resume. Telemetry is not persisted into context; `/explore-fast-stats` shows the last invocation's telemetry in the current Pi process.
+Deep runs the workers concurrently and aggregates explicit-requirement coverage deterministically. Material worker disagreements are passed to the reducer rather than silently marked confirmed. If all workers fail, deep persists only a compact failure marker and does not trigger a parent answer. With at least one usable worker, a reducer success yields `completed` or `partial-completed`; reducer failure yields `fallback` using only the already-compressed labeled worker reports.
+
+The parent parses JSON-mode child events and persists only one compact custom-message handoff into the parent session. Fast uses `pi-fast-explorer`; deep uses `pi-deep-explorer`. A successful or fallback deep run triggers exactly one ordinary parent-model turn. The handoff contains an explicit instruction to answer the original task, the full original task, and the child's compressed final report. It participates in LLM context and survives session save/resume. Telemetry is not persisted into context; `/explore-fast-stats` shows the last invocation's telemetry in the current Pi process.
 
 ## Parent persistence
 

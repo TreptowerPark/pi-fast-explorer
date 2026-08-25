@@ -317,19 +317,26 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
   let finalizationMarkerWritten = false;
   let toolCallsSeen = 0;
   let toolCallBudgetReached = false;
-  const maxTurns = Number.parseInt(process.env.PI_FAST_EXPLORER_MAX_TURNS ?? "5", 10);
-  const hardTurnLimit = Number.isInteger(maxTurns) && maxTurns > 0 ? maxTurns : 5;
+  const deepChild = process.env.PI_DEEP_EXPLORER_CHILD === "1";
+  const configuredTurns = deepChild
+    ? Number.parseInt(process.env.PI_DEEP_EXPLORER_MAX_TURNS ?? "6", 10)
+    : Number.parseInt(process.env.PI_FAST_EXPLORER_MAX_TURNS ?? "5", 10);
+  const hardTurnLimit = Number.isInteger(configuredTurns) && configuredTurns > 0
+    ? configuredTurns
+    : deepChild ? 6 : 5;
   const finalTurnIndex = hardTurnLimit - 1;
   const maxToolCalls = boundedInteger(
-    process.env.PI_FAST_EXPLORER_MAX_TOOL_CALLS,
-    DEFAULT_MAX_TOOL_CALLS,
+    deepChild ? process.env.PI_DEEP_EXPLORER_MAX_TOOL_CALLS : process.env.PI_FAST_EXPLORER_MAX_TOOL_CALLS,
+    deepChild ? 15 : DEFAULT_MAX_TOOL_CALLS,
     1,
     MAX_TOOL_CALLS,
   );
 
   const FINALIZATION_MARKER = "PI_FAST_EXPLORER_FINALIZATION=1";
   const TOOL_FINALIZATION_MARKER = "PI_FAST_EXPLORER_FINALIZATION_TRIGGER=tools";
-  const coverageRequirementIds = (process.env.PI_FAST_EXPLORER_REQUIREMENT_IDS ?? "")
+  const coverageRequirementIds = (deepChild
+    ? process.env.PI_DEEP_EXPLORER_REQUIREMENT_IDS ?? ""
+    : process.env.PI_FAST_EXPLORER_REQUIREMENT_IDS ?? "")
     .split(",")
     .map((id) => id.trim())
     .filter(Boolean);
