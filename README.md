@@ -18,12 +18,13 @@ A manually invoked Pi extension for disposable, read-only repository reconnaissa
 
 Ambient extensions, skills, prompt templates, themes, context files, and built-in tools are disabled for the child. The child extension is the only explicit extension loaded. It cannot call `write`, `edit`, `bash`, package tools, web tools, or another agent.
 
-The default child is `openai-codex/gpt-5.6-luna` at `high` thinking, with a five-turn budget (four investigation turns plus one reserved synthesis turn) and a 90-second timeout. Override defaults for experiments with:
+The default child is `openai-codex/gpt-5.6-luna` at `high` thinking, with a five-turn budget (four investigation turns plus one reserved synthesis turn), a ten repository-tool-call ceiling, and a 90-second timeout. Override defaults for experiments with:
 
 ```bash
 PI_FAST_EXPLORER_MODEL=...
 PI_FAST_EXPLORER_THINKING=high
 PI_FAST_EXPLORER_MAX_TURNS=5
+PI_FAST_EXPLORER_MAX_TOOL_CALLS=10 # bounded to 1..30
 PI_FAST_EXPLORER_TIMEOUT_MS=90000
 ```
 
@@ -78,11 +79,12 @@ Pi has no general CLI `--max-turns` flag. The child treats the configured limit 
 
 - turns `1..maxTurns-1` — normal read-only exploration;
 - turn `maxTurns` — reserved for synthesis. When it starts, the child tells the model to stop using tools, appends that instruction to the LLM context, strips all tools from the outgoing provider payload (so the model mechanically cannot call a tool), and blocks any tool call that still occurs. The run then ends naturally with the final report; no `ctx.abort()` is involved, so no synthetic extra turn appears.
+- the repository-tool ceiling is checked between turns. If an assistant has already emitted a parallel batch that reaches or exceeds the ceiling, every call in that batch is allowed to finish; the next turn enters the same reserved synthesis path instead of starting another investigative batch.
 
 Telemetry termination values:
 
 - `completed` — natural completion before the budget boundary;
-- `budget-finalized` — the run reached the reserved synthesis turn and returned a usable report (persisted exactly like `completed`);
+- `budget-finalized` — the run reached the reserved synthesis turn and returned a usable report (persisted exactly like `completed`); `/explore-fast-stats` reports the tool count against its configured ceiling and whether finalization was triggered by `turn` or `tools`;
 - `turn budget` — even the reserved synthesis turn produced no usable report (genuine failure; compact marker only);
 - `timeout` / `error` — unchanged (compact marker only).
 

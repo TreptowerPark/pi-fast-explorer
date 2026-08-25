@@ -9,6 +9,8 @@ import { DungeonWidget, explorerActivityFromTool, type DungeonOutcome, type Expl
 const DEFAULT_MODEL = "openai-codex/gpt-5.6-luna";
 const DEFAULT_THINKING = "high";
 const DEFAULT_MAX_TURNS = 5;
+const DEFAULT_MAX_TOOL_CALLS = 10;
+const MAX_TOOL_CALLS = 30;
 const DEFAULT_TIMEOUT_MS = 90_000;
 const MAX_QUESTION_CHARS = 8_000;
 const MAX_REPORT_CHARS = 6_000;
@@ -17,6 +19,7 @@ const STATUS_REFRESH_MS = 1_000;
 const STATUS_CLEAR_DELAY_MS = 2_500;
 const CHILD_EXTENSION = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-tools.ts");
 const FINALIZATION_MARKER = "PI_FAST_EXPLORER_FINALIZATION=1";
+const TOOL_FINALIZATION_MARKER = "PI_FAST_EXPLORER_FINALIZATION_TRIGGER=tools";
 const COVERAGE_OPEN = "[COVERAGE]";
 const COVERAGE_CLOSE = "[/COVERAGE]";
 const COVERAGE_REPAIR_TIMEOUT_MS = 30_000;
@@ -64,6 +67,9 @@ Rules:
 - Normally inspect no more than roughly 6 relevant files.
 - Do not follow secondary dependencies unless they are necessary to answer the question.
 - Batch independent searches and reads when possible.
+- You have a limited repository-tool budget. Do not spend remaining tool calls merely because they are available.
+- Before starting another tool batch, decide whether the requested conclusions are already supported; if so, stop exploring and produce the final report.
+- Prefer targeted searches and reads over redundant confirmation.
 - Once the requested facts can be established from existing evidence, stop using tools and synthesize.
 - Do not keep exploring merely to make the answer more comprehensive.
 - Preserve enough remaining budget to produce the final report.
@@ -101,10 +107,12 @@ interface ExplorerTelemetry {
   cost: number;
   turns: number;
   toolCalls: number;
+  toolLimit: number;
   elapsedMs: number;
   model: string;
   thinking: string;
   termination: TerminationReason;
+  finalizationTrigger?: "turn" | "tools";
   requirements?: number;
   confirmed?: number;
   notConfirmed?: number;
@@ -409,9 +417,10 @@ class ExplorerStatus {
 
 function formatTelemetryLine(telemetry: ExplorerTelemetry): string {
   const cached = telemetry.cacheRead > 0 ? ` · ${formatTokens(telemetry.cacheRead)} cached` : "";
+  const finalization = telemetry.finalizationTrigger ? ` · finalized:${telemetry.finalizationTrigger}` : "";
   return `explore-fast: ${telemetry.turns} turns · ${formatTokens(telemetry.input)} in · ${formatTokens(telemetry.output)} out${cached} · ${(
     telemetry.elapsedMs / 1_000
-  ).toFixed(1)}s · ${formatCost(telemetry.cost)} · ${telemetry.toolCalls} tools · ${telemetry.termination}`;
+  ).toFixed(1)}s · ${formatCost(telemetry.cost)} · ${telemetry.toolCalls}/${telemetry.toolLimit} tools${finalization} · ${telemetry.termination}`;
 }
 
 function formatCoverageTelemetry(telemetry: ExplorerTelemetry): string[] {
@@ -601,10 +610,16 @@ function persistExplorerFailure(ctx: any): void {
   }
 }
 
-export function buildChildPrompt(cwd: string, question: string, requirements: ExplicitRequirement[] = []): string {
+export function buildChildPrompt(
+  cwd: string,
+  question: string,
+  requirements: ExplicitRequirement[] = [],
+  maxToolCalls = DEFAULT_MAX_TOOL_CALLS,
+): string {
   const coverageInstructions = buildCoverageInstructions(requirements);
   return [
     `Repository path: ${cwd}`,
+    `Repository tool-call ceiling: ${maxToolCalls}. An already-issued batch may finish before finalization.`,
     "",
     "Delegated question:",
     question,
@@ -798,6 +813,12 @@ async function runExplorer(
   const model = process.env.PI_FAST_EXPLORER_MODEL?.trim() || DEFAULT_MODEL;
   const thinking = process.env.PI_FAST_EXPLORER_THINKING?.trim() || DEFAULT_THINKING;
   const maxTurns = boundedInteger(process.env.PI_FAST_EXPLORER_MAX_TURNS, DEFAULT_MAX_TURNS, 1, 8);
+  const maxToolCalls = boundedInteger(
+    process.env.PI_FAST_EXPLORER_MAX_TOOL_CALLS,
+    DEFAULT_MAX_TOOL_CALLS,
+    1,
+    MAX_TOOL_CALLS,
+  );
   const timeoutMs = boundedInteger(process.env.PI_FAST_EXPLORER_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 15_000, 300_000);
   const telemetry: ExplorerTelemetry = {
     input: 0,
@@ -807,6 +828,7 @@ async function runExplorer(
     cost: 0,
     turns: 0,
     toolCalls: 0,
+    toolLimit: maxToolCalls,
     elapsedMs: 0,
     model,
     thinking,
@@ -850,7 +872,7 @@ async function runExplorer(
     "--extension",
     CHILD_EXTENSION,
     "--",
-    buildChildPrompt(cwd, question, requirements),
+    buildChildPrompt(cwd, question, requirements, maxToolCalls),
   ];
 
   const invocation = getPiInvocation(args);
@@ -859,6 +881,7 @@ async function runExplorer(
     GIT_OPTIONAL_LOCKS: "0",
     PI_FAST_EXPLORER_CHILD: "1",
     PI_FAST_EXPLORER_MAX_TURNS: String(maxTurns),
+    PI_FAST_EXPLORER_MAX_TOOL_CALLS: String(maxToolCalls),
     PI_FAST_EXPLORER_REQUIREMENT_IDS: requirements.map((requirement) => requirement.id).join(","),
   };
 
@@ -889,6 +912,7 @@ async function runExplorer(
     let terminalText = "";
     let lastStopReason = "";
     let finalizingEngaged = false;
+    let finalizationTrigger: "turn" | "tools" | undefined;
     let timedOut = false;
     let abortedByParent = false;
     let settled = false;
@@ -947,6 +971,7 @@ async function runExplorer(
       if (stderr.length > 8_000) stderr = stderr.slice(-8_000);
       // The child writes this marker when its reserved synthesis turn starts, so
       // the live UI can switch to the "finalizing" state before the run ends.
+      if (stderr.includes(TOOL_FINALIZATION_MARKER)) finalizationTrigger = "tools";
       if (!finalizingEngaged && stderr.includes(FINALIZATION_MARKER)) {
         finalizingEngaged = true;
         onFinalizing?.();
@@ -981,6 +1006,7 @@ async function runExplorer(
       // (stderr marker) or, as a fallback, when the observed turn count reaches
       // the configured maximum.
       const reachedBudgetBoundary = finalizingEngaged || telemetry.turns >= maxTurns;
+      if (reachedBudgetBoundary) telemetry.finalizationTrigger = finalizationTrigger ?? "turn";
 
       if (timedOut) telemetry.termination = "timeout";
       else if (abortedByParent) telemetry.termination = "error";

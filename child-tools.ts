@@ -7,6 +7,8 @@ const MAX_SEARCH_CHARS = 12_000;
 const MAX_LIST_CHARS = 8_000;
 const MAX_READ_LINES = 220;
 const COMMAND_TIMEOUT_MS = 8_000;
+const DEFAULT_MAX_TOOL_CALLS = 10;
+const MAX_TOOL_CALLS = 30;
 
 function clip(text: string, maxChars: number, maxLines = 180): string {
   const lines = text.split(/\r?\n/);
@@ -52,6 +54,11 @@ async function resolveTarget(ctx: ExtensionContext, requestedPath: string | unde
     path: relative(root, realPath) || ".",
     realPath,
   };
+}
+
+function boundedInteger(value: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isInteger(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
 }
 
 function result(text: string, details: Record<string, unknown> = {}) {
@@ -268,7 +275,8 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
     },
   });
 
-  // Turn budget: investigation allowance + reserved synthesis turn.
+  // Exploration limits: investigation allowance plus reserved synthesis turn,
+  // and a repository-tool ceiling checked between assistant turns.
   //
   // Pi 0.84.3 event semantics that shape this design:
   // - turn_start (turnIndex, 0-based) fires immediately before each assistant LLM
@@ -287,6 +295,8 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
   // Instead of aborting, the final turn is reserved for synthesis:
   // - turns 1..(maxTurns-1) are investigation turns; tools stay available.
   // - the last turn (turnIndex === finalTurnIndex) is the reserved synthesis turn.
+  // - if the tool ceiling is reached during a batch, the next turn uses this same
+  //   synthesis path early, regardless of its turn index.
   //   When it starts:
   //   1. a stderr marker tells the parent finalization has engaged;
   //   2. the context event appends the finalize instruction to the LLM context;
@@ -298,14 +308,26 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
   //      ends, so the loop can never run past maxTurns+1 turns).
   // The run then ends naturally after the final text-only message: exactly maxTurns
   // assistant message_end events, no synthetic aborted message, no off-by-one.
+  // A tool_call event is emitted for each call in the assistant's current batch.
+  // Mark the threshold when observed, but keep finalizing false until the next
+  // turn_start so every already-issued call in that batch can finish.
   let finalizing = false;
   let hardFinalizing = false;
   let finalizationMarkerWritten = false;
+  let toolCallsSeen = 0;
+  let toolCallBudgetReached = false;
   const maxTurns = Number.parseInt(process.env.PI_FAST_EXPLORER_MAX_TURNS ?? "5", 10);
   const hardTurnLimit = Number.isInteger(maxTurns) && maxTurns > 0 ? maxTurns : 5;
   const finalTurnIndex = hardTurnLimit - 1;
+  const maxToolCalls = boundedInteger(
+    process.env.PI_FAST_EXPLORER_MAX_TOOL_CALLS,
+    DEFAULT_MAX_TOOL_CALLS,
+    1,
+    MAX_TOOL_CALLS,
+  );
 
   const FINALIZATION_MARKER = "PI_FAST_EXPLORER_FINALIZATION=1";
+  const TOOL_FINALIZATION_MARKER = "PI_FAST_EXPLORER_FINALIZATION_TRIGGER=tools";
   const coverageRequirementIds = (process.env.PI_FAST_EXPLORER_REQUIREMENT_IDS ?? "")
     .split(",")
     .map((id) => id.trim())
@@ -337,18 +359,19 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
   const TOOL_BLOCK_REASON = "Exploration budget reached: tools are disabled for the final synthesis turn.";
 
   pi.on("turn_start", (event) => {
-    if (event.turnIndex < finalTurnIndex) return;
+    if (event.turnIndex < finalTurnIndex && !toolCallBudgetReached) return;
     finalizing = true;
+    if (!finalizationMarkerWritten) {
+      finalizationMarkerWritten = true;
+      process.stderr.write(`${FINALIZATION_MARKER}\n`);
+      if (toolCallBudgetReached) process.stderr.write(`${TOOL_FINALIZATION_MARKER}\n`);
+    }
     if (event.turnIndex > finalTurnIndex) {
       // The reserved synthesis turn was already consumed and the model still wants
       // another turn. Terminate any tool batch from here on so the loop cannot
       // continue past maxTurns+1 turns.
       hardFinalizing = true;
       return;
-    }
-    if (!finalizationMarkerWritten) {
-      finalizationMarkerWritten = true;
-      process.stderr.write(`${FINALIZATION_MARKER}\n`);
     }
   });
 
@@ -377,6 +400,8 @@ export default function fastExplorerChild(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", () => {
+    toolCallsSeen += 1;
+    if (toolCallsSeen >= maxToolCalls) toolCallBudgetReached = true;
     if (!finalizing) return;
     return { block: true, reason: TOOL_BLOCK_REASON, terminate: hardFinalizing };
   });
