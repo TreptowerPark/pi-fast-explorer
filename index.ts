@@ -48,6 +48,12 @@ export interface CoverageValidation {
   notInvestigated: number;
 }
 
+export interface CoverageTrailer {
+  start: number;
+  end: number;
+  body: string;
+}
+
 const EXPLORER_SYSTEM_PROMPT = `You are a fast, read-only repository explorer.
 
 Your purpose is to answer a narrowly delegated question while keeping exploratory context out of the parent agent.
@@ -199,6 +205,21 @@ function buildCoverageInstructions(requirements: ExplicitRequirement[]): string[
   ];
 }
 
+export function findFinalCoverageTrailer(report: string): CoverageTrailer | null {
+  const contentEnd = report.trimEnd().length;
+  if (!report.slice(0, contentEnd).endsWith(COVERAGE_CLOSE)) return null;
+
+  const closeStart = contentEnd - COVERAGE_CLOSE.length;
+  const start = report.lastIndexOf(COVERAGE_OPEN, closeStart);
+  if (start < 0) return null;
+
+  return {
+    start,
+    end: contentEnd,
+    body: report.slice(start + COVERAGE_OPEN.length, closeStart),
+  };
+}
+
 export function validateCoverageReport(report: string, requirements: ExplicitRequirement[]): CoverageValidation {
   if (requirements.length === 0) {
     return {
@@ -215,15 +236,11 @@ export function validateCoverageReport(report: string, requirements: ExplicitReq
   const entries: CoverageEntry[] = [];
   const errors: string[] = [];
   const expected = new Set(requirements.map((requirement) => requirement.id));
-  const openCount = report.split(COVERAGE_OPEN).length - 1;
-  const closeCount = report.split(COVERAGE_CLOSE).length - 1;
-  const blocks = [...report.matchAll(/\[COVERAGE\]([\s\S]*?)\[\/COVERAGE\]/g)].map((match) => match[1] ?? "");
+  const trailer = findFinalCoverageTrailer(report);
 
-  if (openCount !== 1 || closeCount !== 1 || blocks.length !== 1) {
-    errors.push("Missing or malformed [COVERAGE]...[/COVERAGE] block.");
-  }
+  if (!trailer) errors.push("Missing or malformed [COVERAGE]...[/COVERAGE] block.");
 
-  for (const line of blocks.join("\n").split(/\r?\n/)) {
+  for (const line of (trailer?.body ?? "").split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const match = trimmed.match(/^(?:[-*]\s*)?([A-Za-z][A-Za-z0-9_-]*)\s+(\S+)$/);
@@ -274,10 +291,9 @@ export function validateCoverageReport(report: string, requirements: ExplicitReq
 }
 
 export function stripCoverageTrailer(report: string): string {
-  let stripped = report.replace(/\[COVERAGE\][\s\S]*?\[\/COVERAGE\]/g, "");
-  const unmatchedOpen = stripped.indexOf(COVERAGE_OPEN);
-  if (unmatchedOpen >= 0) stripped = stripped.slice(0, unmatchedOpen);
-  return stripped.replaceAll(COVERAGE_CLOSE, "").trim();
+  const trailer = findFinalCoverageTrailer(report);
+  if (!trailer) return report.trim();
+  return `${report.slice(0, trailer.start)}${report.slice(trailer.end)}`.trim();
 }
 
 function recordCoverageTelemetry(
@@ -642,6 +658,11 @@ const COVERAGE_REPAIR_SYSTEM_PROMPT = `You repair the structure of a repository 
 Use only the current report and evidence already present in it. Do not research,
 call tools, infer new facts, or add unsupported conclusions. Preserve the useful
 human-readable prose, then append exactly one machine-readable coverage block.
+Append exactly one protocol coverage trailer as the final non-whitespace content
+of the response. The closing [/COVERAGE] marker must be the final non-whitespace
+content. Do not place prose after the trailer. Earlier literal [COVERAGE] or
+[/COVERAGE] text in the report is ordinary prose and must not be treated as
+metadata.
 Account for every required ID exactly once using only CONFIRMED,
 NOT_CONFIRMED, or NOT_INVESTIGATED. Mark NOT_INVESTIGATED when the report does
 not contain evidence that the item was investigated. Return only the rewritten
@@ -679,6 +700,10 @@ function buildCoverageRepairPrompt(
     "Do not perform additional research.",
     "Account for every required ID.",
     "If evidence for an item was not gathered, mark it NOT_INVESTIGATED.",
+    "Append exactly one protocol coverage trailer as the final non-whitespace content of the response.",
+    "The closing [/COVERAGE] marker must be the final non-whitespace content.",
+    "Do not place prose after the trailer.",
+    "Earlier literal [COVERAGE] or [/COVERAGE] text in the report is ordinary prose and must not be treated as metadata.",
     "The report must end with exactly one block in this format:",
     COVERAGE_OPEN,
     ...requirements.map((requirement) => `${requirement.id} <one allowed state>`),

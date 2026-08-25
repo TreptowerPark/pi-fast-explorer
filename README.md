@@ -30,12 +30,15 @@ PI_FAST_EXPLORER_TIMEOUT_MS=90000
 
 When the delegated question contains explicit line-oriented numbered requirements
 (`1. ...` or `1) ...`), the child receives a deterministic `R1`, `R2`, ...
-coverage checklist. Its final prose report also includes a compact `[COVERAGE]`
-trailer with one `CONFIRMED`, `NOT_CONFIRMED`, or `NOT_INVESTIGATED` entry per
-requirement. The host validates this structure locally. A malformed first
-trailer gets at most one no-tools repair using the current report; no additional
-research is allowed. The trailer is stripped before the report enters the parent
-handoff. `/explore-fast-stats` shows the compact coverage counts for these runs.
+coverage checklist. Its final prose report includes coverage metadata as a strict
+final `[COVERAGE]` trailer with one `CONFIRMED`, `NOT_CONFIRMED`, or
+`NOT_INVESTIGATED` entry per requirement. Only the final block is interpreted;
+earlier literal marker examples are ordinary prose, and the closing `[/COVERAGE]`
+marker must be the final non-whitespace content. The host validates this structure
+locally. A malformed trailer gets at most one no-tools repair using the current
+report; no additional research is allowed. The trailer is stripped before the
+report enters the parent handoff. `/explore-fast-stats` shows the compact coverage
+counts for these runs.
 
 Unstructured questions keep the existing path and do not invoke coverage repair.
 
