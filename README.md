@@ -85,12 +85,6 @@ Conclusion:
 
 Evidence:
 - path:line — ...
-
-Uncertainty:
-- none material
-
-Next:
-<single highest-value file/path/question, or none if sufficiently established>
 ```
 
 The child's human-readable report body is kept for the handoff; its host-only `[COVERAGE]` trailer is stripped first. Tool calls, search output, file contents, intermediate reasoning, animation frames, and telemetry are never persisted. Genuine failures (`timeout`, `error`, `turn budget` without a report) persist only a compact marker such as `[pi-fast-explorer]\nExploration failed: timeout before a usable report was produced.` — no diagnostics.
